@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
-require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
+require('dotenv').config({ path: path.resolve(__dirname, '..', '.env'), override: true });
 
 const UPLOAD_DIR = path.resolve(__dirname, '..', 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -207,4 +207,11 @@ app.post('/api/process', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Backend listening ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Backend listening on ${PORT}`);
+  console.log(`  llama cmd : ${BACKEND_LLAMA_CMD}`);
+  console.log(`  model     : ${BACKEND_MODEL_PATH}`);
+  console.log(`  ffmpeg    : ${FFMPEG_CMD}`);
+  console.log(`  ffprobe   : ${FFPROBE_CMD}`);
+  console.log(`  MCP URL   : ${MCP_URL}`);
+});
