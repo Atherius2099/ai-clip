@@ -1,0 +1,5 @@
+body { font-family: Arial, sans-serif; padding: 24px; }
+.container { max-width: 720px; margin: 0 auto; }
+label { display:block; margin-top:12px; }
+input[type=text], textarea { width: 100%; }
+button { margin-top:12px; padding:8px 16px }
