@@ -22,6 +22,22 @@ const BACKEND_MODEL_PATH = process.env.BACKEND_MODEL_PATH || path.resolve(proces
 const FFMPEG_CMD = process.env.FFMPEG_CMD || 'ffmpeg';
 const FFPROBE_CMD = process.env.FFPROBE_CMD || 'ffprobe';
 
+// Auto-detect multimodal projection file if it exists
+function findMultimodalProj(modelPath) {
+  const modelDir = path.dirname(modelPath);
+  const mmproj = path.join(modelDir, 'mmproj-mythos-26b-a4b-prism-pro.gguf');
+  if (fs.existsSync(mmproj)) return mmproj;
+  
+  // Try common mmproj patterns
+  const baseName = path.basename(modelPath, path.extname(modelPath));
+  const possibleMmproj = path.join(modelDir, `mmproj-${baseName}.gguf`);
+  if (fs.existsSync(possibleMmproj)) return possibleMmproj;
+  
+  return null;
+}
+
+const MMPROJ_PATH = findMultimodalProj(BACKEND_MODEL_PATH);
+
 function clampClip(c, maxDurationSec) {
   const start = Math.max(0, Number(c.start || 0));
   const endRaw = Math.max(start + 0.1, Number(c.end || start + 1));
@@ -78,6 +94,9 @@ function buildFallbackCandidates(numClips, minDuration, maxDuration, videoDurati
 async function runLlama(prompt, temperature = 0.7) {
   return new Promise((resolve, reject) => {
     const args = ['-m', BACKEND_MODEL_PATH, '--temp', String(temperature), '-p', prompt, '-n', '128', '--no-display-prompt'];
+    if (MMPROJ_PATH) {
+      args.push('--mmproj', MMPROJ_PATH);
+    }
     const proc = spawn(BACKEND_LLAMA_CMD, args);
     let out = '';
     let err = '';
@@ -211,6 +230,7 @@ app.listen(PORT, () => {
   console.log(`Backend listening on ${PORT}`);
   console.log(`  llama cmd : ${BACKEND_LLAMA_CMD}`);
   console.log(`  model     : ${BACKEND_MODEL_PATH}`);
+  console.log(`  mmproj    : ${MMPROJ_PATH || '(not found)'}`);
   console.log(`  ffmpeg    : ${FFMPEG_CMD}`);
   console.log(`  ffprobe   : ${FFPROBE_CMD}`);
   console.log(`  MCP URL   : ${MCP_URL}`);
