@@ -21,6 +21,34 @@ const BACKEND_LLAMA_CMD = process.env.BACKEND_LLAMA_CMD || (process.platform ===
 const BACKEND_MODEL_PATH = process.env.BACKEND_MODEL_PATH || path.resolve(process.cwd(), 'models', 'model.gguf');
 const FFMPEG_CMD = process.env.FFMPEG_CMD || 'ffmpeg';
 const FFPROBE_CMD = process.env.FFPROBE_CMD || 'ffprobe';
+const MCP_EMBEDDED_ENABLED = process.env.MCP_EMBEDDED_ENABLED !== 'false';
+let hasLoggedMcpUnavailable = false;
+let embeddedVideoEnginePromise = null;
+
+function ensureBinaryOnPath(binaryPath) {
+  if (!binaryPath || /^(ffmpeg|ffprobe)$/i.test(binaryPath)) return;
+  const dir = path.dirname(binaryPath);
+  if (!dir) return;
+  const currentPath = process.env.PATH || process.env.Path || '';
+  if (!currentPath.toLowerCase().includes(dir.toLowerCase())) {
+    process.env.PATH = `${dir}${path.delimiter}${currentPath}`;
+  }
+}
+
+async function getEmbeddedVideoEngine() {
+  if (!MCP_EMBEDDED_ENABLED) return null;
+  if (!embeddedVideoEnginePromise) {
+    ensureBinaryOnPath(FFMPEG_CMD);
+    ensureBinaryOnPath(FFPROBE_CMD);
+    embeddedVideoEnginePromise = import('@pickstar-2002/video-clip-mcp/dist/core/video-engine.js')
+      .then((m) => m.VideoEngine.getInstance())
+      .catch((e) => {
+        console.warn(`Embedded MCP engine load failed: ${e.message}`);
+        return null;
+      });
+  }
+  return embeddedVideoEnginePromise;
+}
 
 // Auto-detect multimodal projection file if it exists
 function findMultimodalProj(modelPath) {
@@ -114,12 +142,66 @@ async function runLlama(prompt, temperature = 0.7) {
 
 // Helper: call MCP service which returns an array of candidate timestamps [{start, end, score}, ...]
 async function callMCP(videoPathOrUrl, prompt, options = {}) {
+  async function tryEmbedded() {
+    // Embedded MCP adapter only works with local files.
+    if (!MCP_EMBEDDED_ENABLED || !videoPathOrUrl || /^https?:\/\//i.test(videoPathOrUrl)) {
+      return null;
+    }
+    if (!fs.existsSync(videoPathOrUrl)) {
+      return null;
+    }
+    const engine = await getEmbeddedVideoEngine();
+    if (!engine) return null;
+
+    const info = await engine.getVideoInfo(videoPathOrUrl);
+    const durationSec = Number(info && info.duration);
+    const candidates = buildFallbackCandidates(
+      options.numClips,
+      options.minDuration,
+      options.maxDuration,
+      Number.isFinite(durationSec) ? durationSec : null
+    );
+
+    return {
+      candidates,
+      source: 'embedded-video-clip-mcp',
+      videoInfo: info
+    };
+  }
+
+  if (!MCP_URL || MCP_URL === 'embedded') {
+    const embedded = await tryEmbedded();
+    if (embedded) return embedded;
+    throw new Error('embedded MCP unavailable');
+  }
+
   try {
     const resp = await axios.post(MCP_URL, { video: videoPathOrUrl, prompt, options }, { timeout: 120000 });
     return resp.data;
   } catch (e) {
-    console.error('MCP call failed', e.message);
-    throw e;
+    try {
+      const embedded = await tryEmbedded();
+      if (embedded) {
+        hasLoggedMcpUnavailable = false;
+        return embedded;
+      }
+    } catch (embeddedError) {
+      // Ignore embedded adapter errors and continue with normal warning path.
+      if (embeddedError && embeddedError.message) {
+        console.warn(`Embedded MCP fallback failed: ${embeddedError.message}`);
+      }
+    }
+
+    const status = e && e.response && e.response.status ? `HTTP ${e.response.status}` : null;
+    const code = e && e.code ? e.code : null;
+    const message = e && e.message ? e.message : 'unknown error';
+    const detail = status || code || message;
+
+    if (!hasLoggedMcpUnavailable) {
+      hasLoggedMcpUnavailable = true;
+      console.warn(`MCP unavailable at ${MCP_URL}: ${detail}. Using local fallback.`);
+    }
+    throw new Error(detail);
   }
 }
 
@@ -164,11 +246,16 @@ app.post('/api/process', async (req, res) => {
     let mcpResult = null;
     let mcpUnavailable = false;
     let warning = null;
+    let mcpSource = MCP_URL;
     try {
       mcpResult = await callMCP(video, prompt, options);
+      if (mcpResult && mcpResult.source) {
+        mcpSource = mcpResult.source;
+      }
+      hasLoggedMcpUnavailable = false;
     } catch (e) {
       mcpUnavailable = true;
-      warning = `MCP unavailable at ${MCP_URL}. Falling back to local timestamp generation.`;
+      warning = `MCP unavailable at ${MCP_URL} (${e.message}). Falling back to local timestamp generation.`;
     }
 
     // Expect MCP to return list of {start, end,score}
@@ -218,7 +305,7 @@ app.post('/api/process', async (req, res) => {
       }
     }
 
-    res.json({ chosen, clipFiles, warning, mcpUnavailable });
+    res.json({ chosen, clipFiles, warning, mcpUnavailable, mcpSource });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
