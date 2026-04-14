@@ -1,0 +1,10 @@
+{
+  "name": "ai-clip",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "bootstrap": "node ./scripts/bootstrap.js",
+    "start:backend": "node backend/server.js",
+    "start:frontend": "npm --prefix frontend run dev"
+  }
+}
